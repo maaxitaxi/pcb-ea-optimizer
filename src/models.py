@@ -58,13 +58,24 @@ class PlacedComponent:
         x_min, y_min, x_max, y_max = self.get_bbox()
         return x_min >= 0 and y_min >= 0 and x_max <= BOARD_W and y_max <= BOARD_H
 
-    def overlaps(self, other: 'PlacedComponent') -> bool:
+    def overlaps(self, other: 'PlacedComponent') -> float:
         ax1, ay1, ax2, ay2 = self.get_bbox()
         bx1, by1, bx2, by2 = other.get_bbox()
-        if ax2 <= bx1 or bx2 <= ax1:
-            return False
-        if ay2 <= by1 or by2 <= ay1:
-            return False
-        return True
+
+        # Calculate intersection dimensions
+        inter_w = min(ax2, bx2) - max(ax1, bx1)
+        inter_h = min(ay2, by2) - max(ay1, by1)
+
+        if inter_w <= 0 or inter_h <= 0:
+            return 0.0
+
+        inter_area = inter_w * inter_h
+
+        # Normalize by the smaller component's area (worst-case overlap)
+        area_a = (ax2 - ax1) * (ay2 - ay1)
+        area_b = (bx2 - bx1) * (by2 - by1)
+        smaller_area = min(area_a, area_b)
+
+        return inter_area / smaller_area
 
 Genome = List[PlacedComponent]
