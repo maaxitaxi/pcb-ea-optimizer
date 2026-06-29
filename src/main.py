@@ -2,11 +2,20 @@
 import tkinter as tk
 from tkinter import ttk
 import copy
+import math
 from typing import List, Optional, Tuple
+
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from config import BOARD_W, BOARD_H, BOARD_WIDTH_MM, BOARD_HEIGHT_MM, POP_SIZE, NM_TO_MM
 from models import Genome
-from ea_engine import create_scenario, random_placement, normalize_population_fitness, evolve_one_generation
+from ea_engine import (
+    create_scenario, random_placement, normalize_population_fitness, evolve_one_generation,
+    compute_tracelength_fitness, compute_overlap_penalty, compute_bbox_area,
+)
 
 class PCBOptimizerApp:
     CANVAS_PADDING = 40
@@ -25,6 +34,10 @@ class PCBOptimizerApp:
         self.best_genome: Optional[Genome] = None
         self.best_fitness: float = 0.0
         self.is_running = False
+        self.history: dict = {"gen": [], "fitness": [], "trace_mm": [], "bbox_mm2": [], "overlap": []}
+        self.stats_window: Optional[tk.Toplevel] = None
+        self._stats_canvas = None
+        self._stats_axes = None
 
         self.scale = (self.CANVAS_SIZE - 2 * self.CANVAS_PADDING) / max(BOARD_W, BOARD_H)
         self._build_gui()
@@ -66,6 +79,9 @@ class PCBOptimizerApp:
         self.btn_reset = tk.Button(btn_zone, text="↺ System Reset", font=("Segoe UI", 10, "bold"), bg="#3A1F2D", fg="#F07171", bd=0, pady=10, cursor="hand2", activebackground="#4A2F3D", command=self.reset)
         self.btn_reset.pack(fill=tk.X, pady=4)
 
+        self.btn_stats = tk.Button(btn_zone, text="📊 Statistik anzeigen", font=("Segoe UI", 10, "bold"), bg="#2E3A46", fg="#E4E4E7", bd=0, pady=10, cursor="hand2", activebackground="#3E4A56", command=self.show_statistics)
+        self.btn_stats.pack(fill=tk.X, pady=4)
+
         legend_card = tk.LabelFrame(sidebar, text=" BAUTEILE ", font=("Consolas", 9, "bold"), fg="#4E9F3D", bg="#151518", bd=1, padx=10, pady=10)
         legend_card.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
 
@@ -89,6 +105,7 @@ class PCBOptimizerApp:
         self.generation = 0
         self.best_fitness = 0.0
         self.best_genome = None
+        self.history = {"gen": [], "fitness": [], "trace_mm": [], "bbox_mm2": [], "overlap": []}
 
         self.population = [random_placement(self.footprints) for _ in range(POP_SIZE)]
         self.fitness_vals = normalize_population_fitness(self.population, self.netlist)
@@ -103,6 +120,7 @@ class PCBOptimizerApp:
         self._update_best()
         self._update_status()
         self._draw()
+        self._refresh_statistics()
 
     def toggle_auto_run(self):
         if self.is_running:
@@ -119,9 +137,10 @@ class PCBOptimizerApp:
         for _ in range(5):
             self.population, self.fitness_vals = evolve_one_generation(self.population, self.fitness_vals, self.netlist)
             self.generation += 1
-        self._update_best()
+            self._update_best()
         self._update_status()
         self._draw()
+        self._refresh_statistics()
         self.root.after(20, self._auto_run_loop)
 
     def _update_best(self):
@@ -129,6 +148,16 @@ class PCBOptimizerApp:
         best_idx = max(range(len(self.fitness_vals)), key=lambda i: self.fitness_vals[i])
         self.best_fitness = self.fitness_vals[best_idx]   # score in [0, 1]; 1.0 = best
         self.best_genome = copy.deepcopy(self.population[best_idx])
+        self._record_history()
+
+    def _record_history(self):
+        trace = compute_tracelength_fitness(self.best_genome, self.netlist)
+        bbox = compute_bbox_area(self.best_genome)
+        self.history["gen"].append(self.generation)
+        self.history["fitness"].append(self.best_fitness)
+        self.history["trace_mm"].append(trace * NM_TO_MM if trace != float('inf') else math.nan)
+        self.history["bbox_mm2"].append(bbox * NM_TO_MM ** 2 if bbox != float('inf') else math.nan)
+        self.history["overlap"].append(compute_overlap_penalty(self.best_genome))
 
     def _update_status(self):
         self.lbl_gen.config(text=str(self.generation))
@@ -190,6 +219,56 @@ class PCBOptimizerApp:
             for _, _, abs_x, abs_y in comp.get_pin_positions():
                 pcx, pcy = self._nm_to_canvas(abs_x, abs_y)
                 self.canvas.create_rectangle(pcx-3, pcy-3, pcx+3, pcy+3, fill="#FFB344", outline="#D97706")
+
+    def show_statistics(self):
+        if not self.history["gen"]:
+            return
+
+        if self.stats_window is None or not self.stats_window.winfo_exists():
+            self.stats_window = tk.Toplevel(self.root)
+            self.stats_window.title("EA Statistik — Verlauf über Generationen")
+            self.stats_window.configure(bg="#121214")
+            self.stats_window.geometry("780x1080")
+
+            fig = Figure(figsize=(7.6, 11.2), dpi=100, facecolor="#121214")
+            self._stats_axes = fig.subplots(4, 1, sharex=True)
+            fig.subplots_adjust(left=0.15, right=0.96, top=0.97, bottom=0.06, hspace=0.45)
+
+            self._stats_canvas = FigureCanvasTkAgg(fig, master=self.stats_window)
+            self._stats_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        else:
+            self.stats_window.lift()
+
+        self._draw_statistics()
+
+    def _draw_statistics(self):
+        if self._stats_canvas is None:
+            return
+
+        gens = self.history["gen"]
+        series = [
+            (self.history["fitness"], "Beste Fitness (0-1)", "#4E9F3D"),
+            (self.history["trace_mm"], "Leitungslänge (mm)", "#FFB344"),
+            (self.history["bbox_mm2"], "Bounding-Box (mm²)", "#5FB3D9"),
+            (self.history["overlap"], "Overlap-Penalty", "#F07171"),
+        ]
+
+        for ax, (values, label, color) in zip(self._stats_axes, series):
+            ax.clear()
+            ax.plot(gens, values, color=color, linewidth=1.5)
+            ax.set_facecolor("#151518")
+            ax.set_ylabel(label, color="#A1A1AA", fontsize=9)
+            ax.tick_params(colors="#71717A", labelsize=8)
+            for spine in ax.spines.values():
+                spine.set_color("#3F3F46")
+            ax.grid(True, color="#27272A", linewidth=0.5)
+
+        self._stats_axes[-1].set_xlabel("Generation", color="#A1A1AA", fontsize=9)
+        self._stats_canvas.draw()
+
+    def _refresh_statistics(self):
+        if self.stats_window is not None and self.stats_window.winfo_exists():
+            self._draw_statistics()
 
 
 def main():

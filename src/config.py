@@ -17,5 +17,17 @@ TOURNAMENT_K    = 4
 MUTATION_RATE   = 0.3     # Leicht erhöht für mehr Dynamik
 CROSSOVER_RATE  = 0.8     
 SIGMA_XY_MM     = 8.0     
-SIGMA_XY        = SIGMA_XY_MM * MM_TO_NM  
+SIGMA_XY        = SIGMA_XY_MM * MM_TO_NM
 ROT_MUTATE_P    = 0.25
+
+# Fitness-Gewichtung (muss in Summe 1.0 ergeben)
+TRACE_WEIGHT    = 0.35   # Leitungslänge (netz-gewichtet, siehe unten)
+OVERLAP_WEIGHT  = 0.45   # Bauteil-Überlappung
+BBOX_WEIGHT     = 0.20   # Free-Space-Minimization (kompakte Bounding Box ums Layout)
+
+# Netz-Gewichtung für die Leitungslängen-Berechnung:
+# Power-Nets (Spannungsversorgung) werden geringer gewichtet als Daten-/Signal-Nets,
+# da kurze Versorgungsleitungen weniger kritisch sind als Signalintegrität bei Daten-Leitungen.
+POWER_NET_KEYWORDS = ("VCC", "GND", "VIN", "3V3", "EN")
+POWER_NET_WEIGHT   = 0.3
+DATA_NET_WEIGHT    = 1.0

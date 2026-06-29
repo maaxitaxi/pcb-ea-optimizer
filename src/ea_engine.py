@@ -3,12 +3,20 @@ import random
 import copy
 import math
 from typing import List, Dict, Tuple
-from config import BOARD_W, BOARD_H, POP_SIZE, TOURNAMENT_K, CROSSOVER_RATE, MUTATION_RATE, SIGMA_XY, ROT_MUTATE_P, VALID_ROTATIONS, MM_TO_NM
+from config import (
+    BOARD_W, BOARD_H, POP_SIZE, TOURNAMENT_K, CROSSOVER_RATE, MUTATION_RATE, SIGMA_XY, ROT_MUTATE_P,
+    VALID_ROTATIONS, MM_TO_NM, TRACE_WEIGHT, OVERLAP_WEIGHT, BBOX_WEIGHT,
+    POWER_NET_KEYWORDS, POWER_NET_WEIGHT, DATA_NET_WEIGHT,
+)
 from models import Footprint, PlacedComponent, Genome, Pin
 
-# Weights for the combined fitness score (must sum to 1.0)
-TRACE_WEIGHT   = 0.4
-OVERLAP_WEIGHT = 1 - TRACE_WEIGHT
+
+def get_net_weight(net_id: str) -> float:
+    """Power nets (VCC/GND/...) are weighted lower than data/signal nets when scoring trace length."""
+    upper = net_id.upper()
+    if any(keyword in upper for keyword in POWER_NET_KEYWORDS):
+        return POWER_NET_WEIGHT
+    return DATA_NET_WEIGHT
 
 def create_scenario() -> Tuple[List[Footprint], Dict[str, List[Tuple[str, str]]]]:
     nm = MM_TO_NM
@@ -72,10 +80,11 @@ def compute_tracelength_fitness(genome: Genome, netlist: Dict[str, List[Tuple[st
 
     total_length = 0.0
     for net_id, connections in netlist.items():
+        weight = get_net_weight(net_id)
         net_pins = [pin_positions[key] for ref, pid in connections if (key := (ref, pid)) in pin_positions]
         for i in range(len(net_pins)):
             for j in range(i + 1, len(net_pins)):
-                total_length += math.hypot(net_pins[i][0] - net_pins[j][0], net_pins[i][1] - net_pins[j][1])
+                total_length += weight * math.hypot(net_pins[i][0] - net_pins[j][0], net_pins[i][1] - net_pins[j][1])
     return total_length
 
 
@@ -88,6 +97,33 @@ def compute_overlap_penalty(genome: Genome) -> float:
     return total
 
 
+def compute_bbox_area(genome: Genome) -> float:
+    """Free-space minimization: area of the smallest axis-aligned bounding box enclosing
+    all components. A smaller bbox means a more compact layout with less wasted board space.
+    Returns inf if any component is off-board (mirrors compute_tracelength_fitness)."""
+    for comp in genome:
+        if not comp.is_within_board():
+            return float('inf')
+
+    x_min = min(comp.get_bbox()[0] for comp in genome)
+    y_min = min(comp.get_bbox()[1] for comp in genome)
+    x_max = max(comp.get_bbox()[2] for comp in genome)
+    y_max = max(comp.get_bbox()[3] for comp in genome)
+    return (x_max - x_min) * (y_max - y_min)
+
+
+def _normalize_lower_is_better(values: List[float]) -> List[float]:
+    """Maps a list of raw scores (lower = better, possibly inf for infeasible) to [0, 1]
+    where 1.0 = best. inf always maps to 0.0."""
+    finite = [v for v in values if v != float('inf')]
+    if not finite:
+        return [0.0] * len(values)
+    v_min, v_max = min(finite), max(finite)
+    if v_max == v_min:
+        return [0.0 if v == float('inf') else 1.0 for v in values]
+    return [0.0 if v == float('inf') else 1.0 - (v - v_min) / (v_max - v_min) for v in values]
+
+
 # ---------------------------------------------------------------------------
 # Combined normalised fitness over the whole population
 # ---------------------------------------------------------------------------
@@ -97,6 +133,7 @@ def normalize_population_fitness(
     netlist: Dict[str, List[Tuple[str, str]]],
     trace_weight: float = TRACE_WEIGHT,
     overlap_weight: float = OVERLAP_WEIGHT,
+    bbox_weight: float = BBOX_WEIGHT,
 ) -> List[float]:
     """
     Computes a combined, normalised fitness score in [0, 1] for every genome.
@@ -105,23 +142,11 @@ def normalize_population_fitness(
     """
     traces   = [compute_tracelength_fitness(g, netlist) for g in population]
     overlaps = [compute_overlap_penalty(g) for g in population]
+    bboxes   = [compute_bbox_area(g) for g in population]
 
-    # --- Normalise trace lengths (ignore inf) ---
-    finite_traces = [t for t in traces if t != float('inf')]
-    if finite_traces:
-        t_min, t_max = min(finite_traces), max(finite_traces)
-        if t_max != t_min:
-            norm_traces = [
-                0.0 if t == float('inf')
-                else 1.0 - (t - t_min) / (t_max - t_min)
-                for t in traces
-            ]
-        else:
-            # All finite traces identical — give full score to valid, 0 to invalid
-            norm_traces = [0.0 if t == float('inf') else 1.0 for t in traces]
-    else:
-        # Every genome is off-board
-        norm_traces = [0.0] * len(traces)
+    # --- Normalise trace lengths and bbox areas (lower = better, ignore inf) ---
+    norm_traces = _normalize_lower_is_better(traces)
+    norm_bboxes = _normalize_lower_is_better(bboxes)
 
     # --- Normalise overlap penalties ---
     o_max = max(overlaps) if overlaps else 0.0
@@ -132,8 +157,8 @@ def normalize_population_fitness(
 
     # --- Weighted sum → combined score in [0, 1] ---
     combined = [
-        trace_weight * nt + overlap_weight * no
-        for nt, no in zip(norm_traces, norm_overlaps)
+        trace_weight * nt + overlap_weight * no + bbox_weight * nb
+        for nt, no, nb in zip(norm_traces, norm_overlaps, norm_bboxes)
     ]
     return combined
 
