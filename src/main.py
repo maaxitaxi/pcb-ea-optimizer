@@ -1,6 +1,6 @@
 # main.py
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog, messagebox
 import copy
 import math
 from typing import List, Optional, Tuple
@@ -68,19 +68,22 @@ class PCBOptimizerApp:
         self.lbl_inf = self._add_stat_row(stats_card, "Infeasible:", "0 / 0")
 
         btn_zone = tk.Frame(sidebar, bg="#1E1E24")
-        btn_zone.pack(fill=tk.X, padx=15, pady=20)
+        btn_zone.pack(fill=tk.X, padx=15, pady=10)
 
-        self.btn_next = tk.Button(btn_zone, text="▶ Nächste Generation", font=("Segoe UI", 10, "bold"), bg="#2E3A46", fg="#E4E4E7", bd=0, pady=10, cursor="hand2", activebackground="#3E4A56", command=self.next_generation)
-        self.btn_next.pack(fill=tk.X, pady=4)
+        self.btn_next = tk.Button(btn_zone, text="▶ Nächste Generation", font=("Segoe UI", 10, "bold"), bg="#2E3A46", fg="#E4E4E7", bd=0, pady=8, cursor="hand2", activebackground="#3E4A56", command=self.next_generation)
+        self.btn_next.pack(fill=tk.X, pady=3)
 
-        self.btn_auto = tk.Button(btn_zone, text="⚡ Auto-Run (Dauerlauf)", font=("Segoe UI", 10, "bold"), bg="#4E9F3D", fg="#121214", bd=0, pady=10, cursor="hand2", activebackground="#5EA44D", command=self.toggle_auto_run)
-        self.btn_auto.pack(fill=tk.X, pady=4)
+        self.btn_auto = tk.Button(btn_zone, text="⚡ Auto-Run (Dauerlauf)", font=("Segoe UI", 10, "bold"), bg="#4E9F3D", fg="#121214", bd=0, pady=8, cursor="hand2", activebackground="#5EA44D", command=self.toggle_auto_run)
+        self.btn_auto.pack(fill=tk.X, pady=3)
 
-        self.btn_reset = tk.Button(btn_zone, text="↺ System Reset", font=("Segoe UI", 10, "bold"), bg="#3A1F2D", fg="#F07171", bd=0, pady=10, cursor="hand2", activebackground="#4A2F3D", command=self.reset)
-        self.btn_reset.pack(fill=tk.X, pady=4)
+        self.btn_reset = tk.Button(btn_zone, text="↺ System Reset", font=("Segoe UI", 10, "bold"), bg="#3A1F2D", fg="#F07171", bd=0, pady=8, cursor="hand2", activebackground="#4A2F3D", command=self.reset)
+        self.btn_reset.pack(fill=tk.X, pady=3)
 
-        self.btn_stats = tk.Button(btn_zone, text="📊 Statistik anzeigen", font=("Segoe UI", 10, "bold"), bg="#2E3A46", fg="#E4E4E7", bd=0, pady=10, cursor="hand2", activebackground="#3E4A56", command=self.show_statistics)
-        self.btn_stats.pack(fill=tk.X, pady=4)
+        self.btn_stats = tk.Button(btn_zone, text="📊 Statistik anzeigen", font=("Segoe UI", 10, "bold"), bg="#2E3A46", fg="#E4E4E7", bd=0, pady=8, cursor="hand2", activebackground="#3E4A56", command=self.show_statistics)
+        self.btn_stats.pack(fill=tk.X, pady=3)
+
+        self.btn_export = tk.Button(btn_zone, text="💾 Als .DSN speichern", font=("Segoe UI", 10, "bold"), bg="#1D4ED8", fg="#FFFFFF", bd=0, pady=8, cursor="hand2", activebackground="#2563EB", command=self.export_dsn)
+        self.btn_export.pack(fill=tk.X, pady=3)
 
         legend_card = tk.LabelFrame(sidebar, text=" BAUTEILE ", font=("Consolas", 9, "bold"), fg="#4E9F3D", bg="#151518", bd=1, padx=10, pady=10)
         legend_card.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
@@ -144,9 +147,8 @@ class PCBOptimizerApp:
         self.root.after(20, self._auto_run_loop)
 
     def _update_best(self):
-        """Always track the best individual of the current generation (higher = better)."""
         best_idx = max(range(len(self.fitness_vals)), key=lambda i: self.fitness_vals[i])
-        self.best_fitness = self.fitness_vals[best_idx]   # score in [0, 1]; 1.0 = best
+        self.best_fitness = self.fitness_vals[best_idx]
         self.best_genome = copy.deepcopy(self.population[best_idx])
         self._record_history()
 
@@ -174,7 +176,6 @@ class PCBOptimizerApp:
         if genome is None:
             return
 
-        # Grid
         for x in range(0, int(BOARD_W) + 1, 25 * 1000000):
             cx1, cy1 = self._nm_to_canvas(x, 0)
             cx2, cy2 = self._nm_to_canvas(x, BOARD_H)
@@ -184,13 +185,11 @@ class PCBOptimizerApp:
             cx2, cy2 = self._nm_to_canvas(BOARD_W, y)
             self.canvas.create_line(cx1, cy1, cx2, cy2, fill="#1F1F24")
 
-        # Board border
         x1, y1 = self._nm_to_canvas(0, 0)
         x2, y2 = self._nm_to_canvas(BOARD_W, BOARD_H)
         self.canvas.create_rectangle(x1, y1, x2, y2, outline="#4E9F3D", width=2)
         self.canvas.create_text(x1 + 10, y1 + 15, text=f"KiCad Canvas: {BOARD_WIDTH_MM}x{BOARD_HEIGHT_MM}mm", fill="#4E9F3D", font=("Consolas", 9), anchor="w")
 
-        # Nets (ratsnest / Luftlinien)
         pin_positions = {}
         for comp in genome:
             for pin_id, _, abs_x, abs_y in comp.get_pin_positions():
@@ -204,7 +203,6 @@ class PCBOptimizerApp:
                     px2, py2 = self._nm_to_canvas(*net_pins[j])
                     self.canvas.create_line(px1, py1, px2, py2, fill="#3F4E4F", width=1, dash=(2, 4))
 
-        # Components
         for comp in genome:
             x_min, y_min, x_max, y_max = comp.get_bbox()
             cx1, cy1 = self._nm_to_canvas(x_min, y_min)
@@ -269,6 +267,97 @@ class PCBOptimizerApp:
     def _refresh_statistics(self):
         if self.stats_window is not None and self.stats_window.winfo_exists():
             self._draw_statistics()
+
+    def export_dsn(self):
+        if not self.best_genome:
+            messagebox.showwarning("Warnung", "Kein Layout zum Exportieren vorhanden!")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".dsn",
+            filetypes=[("Specctra DSN", "*.dsn"), ("Alle Dateien", "*.*")],
+            title="Layout als DSN speichern"
+        )
+        if not file_path:
+            return
+
+        try:
+            dsn_content = self._generate_dsn()
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(dsn_content)
+            messagebox.showinfo("Erfolg", f"Layout erfolgreich gespeichert unter:\n{file_path}")
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Fehler beim Speichern der DSN-Datei:\n{e}")
+
+    def _generate_dsn(self) -> str:
+        lines = []
+        lines.append('(pcb pcb_optimizer')
+        lines.append('  (parser')
+        lines.append('    (string_quote ")')
+        lines.append('    (space_in_quoted_tokens on)')
+        lines.append('    (host_cad "KiCad")')
+        lines.append('  )')
+        lines.append('  (resolution mm 1000000)')
+        lines.append('  (unit mm)')
+        
+        # Structure Section
+        lines.append('  (structure')
+        lines.append('    (layer F.Cu (type signal) (property (index 0)))')
+        lines.append('    (layer B.Cu (type signal) (property (index 1)))')
+        # KORREKTUR: Einen nicht-routbaren Layer für Bauteilumrisse deklarieren
+        lines.append('    (layer F.SilkS (type document))') 
+        lines.append('    (boundary')
+        lines.append(f'      (rect pcb 0 0 {BOARD_WIDTH_MM} {BOARD_HEIGHT_MM})')
+        lines.append('    )')
+        lines.append('    (rule')
+        lines.append('      (width 0.25)')
+        lines.append('      (clearance 0.2)')
+        lines.append('    )')
+        lines.append('  )')
+
+        # Placement Section
+        lines.append('  (placement')
+        for comp in self.best_genome:
+            x_mm = comp.x * NM_TO_MM
+            y_mm = comp.y * NM_TO_MM
+            lines.append(f'    (component "LIB_{comp.footprint.ref}"')
+            lines.append(f'      (place {comp.footprint.ref} {x_mm:.4f} {y_mm:.4f} front {comp.rot:.1f})')
+            lines.append('    )')
+        lines.append('  )')
+
+        # Library Section
+        lines.append('  (library')
+        lines.append('    (padstack "Pad_Default"')
+        lines.append('      (shape (circle F.Cu 0.8))')
+        lines.append('      (shape (circle B.Cu 0.8))')
+        lines.append('    )')
+        
+        unique_footprints = {comp.footprint.ref: comp.footprint for comp in self.best_genome}
+        for ref, fp in unique_footprints.items():
+            w_mm = fp.width * NM_TO_MM
+            h_mm = fp.height * NM_TO_MM
+            half_w = w_mm / 2.0
+            half_h = h_mm / 2.0
+
+            lines.append(f'    (image "LIB_{ref}"')
+            # KORREKTUR: Umriss auf den Document-Layer legen statt auf F.Cu
+            lines.append(f'      (outline (rect F.SilkS -{half_w:.4f} -{half_h:.4f} {half_w:.4f} {half_h:.4f}))')
+            for pin in fp.pins:
+                px_mm = pin.rel_x * NM_TO_MM
+                py_mm = pin.rel_y * NM_TO_MM
+                lines.append(f'      (pin "Pad_Default" "{pin.pin_id}" {px_mm:.4f} {py_mm:.4f})')
+            lines.append('    )')
+        lines.append('  )')
+
+        # Network Section
+        lines.append('  (network')
+        for net_id, connections in self.netlist.items():
+            pins_str = " ".join([f'"{ref}"-"{pid}"' for ref, pid in connections])
+            lines.append(f'    (net "{net_id}" (pins {pins_str}))')
+        lines.append('  )')
+
+        lines.append(')')
+        return "\n".join(lines)
 
 
 def main():
