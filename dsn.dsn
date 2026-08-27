@@ -1,0 +1,124 @@
+(pcb pcb_optimizer
+  (parser
+    (string_quote ")
+    (space_in_quoted_tokens on)
+    (host_cad "KiCad")
+  )
+  (resolution mm 1000000)
+  (unit mm)
+  (structure
+    (layer F.Cu (type signal) (property (index 0)) (direction horizontal))
+    (layer B.Cu (type signal) (property (index 1)) (direction vertical))
+    (boundary
+      (rect pcb 0 0 150 150)
+    )
+    (rule
+      (width 0.20)
+      (clearance 0.12)
+      (via Via_Default)
+    )
+  )
+  (placement
+    (component "LIB_IC1"
+      (place IC1 79.0693 74.3858 front 0.0)
+    )
+    (component "LIB_U1"
+      (place U1 68.4152 105.3883 front 180.0)
+    )
+    (component "LIB_U2"
+      (place U2 91.4076 116.0362 front 180.0)
+    )
+    (component "LIB_R1"
+      (place R1 53.9473 44.7086 front 270.0)
+    )
+    (component "LIB_R2"
+      (place R2 86.3242 98.2818 front 0.0)
+    )
+    (component "LIB_R3"
+      (place R3 92.5863 46.3265 front 270.0)
+    )
+    (component "LIB_R4"
+      (place R4 52.8577 104.3392 front 90.0)
+    )
+    (component "LIB_D1"
+      (place D1 64.3777 42.2502 front 90.0)
+    )
+  )
+  (library
+    (padstack "Pad_SMD"
+      (shape (rect F.Cu -0.35 -0.35 0.35 0.35))
+      (attach on)
+    )
+    (padstack "Via_Default"
+      (shape (circle F.Cu 0.5 0 0))
+      (shape (circle B.Cu 0.5 0 0))
+      (attach on)
+    )
+    (image "LIB_IC1"
+      (pin "Pad_SMD" "P1" -13.0000 0.0000)
+      (pin "Pad_SMD" "P2" -13.0000 -8.0000)
+      (pin "Pad_SMD" "P3" -13.0000 8.0000)
+      (pin "Pad_SMD" "P4" 13.0000 0.0000)
+      (pin "Pad_SMD" "P5" 13.0000 -8.0000)
+      (pin "Pad_SMD" "P6" 13.0000 8.0000)
+      (pin "Pad_SMD" "P7" 0.0000 -13.0000)
+      (pin "Pad_SMD" "P8" 0.0000 13.0000)
+    )
+    (image "LIB_U1"
+      (pin "Pad_SMD" "IN" -6.0000 0.0000)
+      (pin "Pad_SMD" "OUT" 6.0000 0.0000)
+      (pin "Pad_SMD" "GND" 0.0000 4.0000)
+      (pin "Pad_SMD" "EN" 0.0000 -4.0000)
+    )
+    (image "LIB_U2"
+      (pin "Pad_SMD" "IN" -6.0000 0.0000)
+      (pin "Pad_SMD" "OUT" 6.0000 0.0000)
+      (pin "Pad_SMD" "GND" 0.0000 4.0000)
+      (pin "Pad_SMD" "EN" 0.0000 -4.0000)
+    )
+    (image "LIB_R1"
+      (pin "Pad_SMD" "A" -3.0000 0.0000)
+      (pin "Pad_SMD" "B" 3.0000 0.0000)
+    )
+    (image "LIB_R2"
+      (pin "Pad_SMD" "A" -3.0000 0.0000)
+      (pin "Pad_SMD" "B" 3.0000 0.0000)
+    )
+    (image "LIB_R3"
+      (pin "Pad_SMD" "A" -3.0000 0.0000)
+      (pin "Pad_SMD" "B" 3.0000 0.0000)
+    )
+    (image "LIB_R4"
+      (pin "Pad_SMD" "A" -3.0000 0.0000)
+      (pin "Pad_SMD" "B" 3.0000 0.0000)
+    )
+    (image "LIB_D1"
+      (pin "Pad_SMD" "A" -1.8000 0.0000)
+      (pin "Pad_SMD" "K" 1.8000 0.0000)
+    )
+  )
+  (network
+    (net "VCC" (pins "IC1"-"P1" "U1"-"OUT" "R1"-"A"))
+    (net "GND" (pins "IC1"-"P2" "IC1"-"P8" "U1"-"GND" "U2"-"GND" "D1"-"K"))
+    (net "NET_SPI_CLK" (pins "IC1"-"P3" "R2"-"A"))
+    (net "NET_SPI_MOSI" (pins "IC1"-"P4" "R2"-"B"))
+    (net "NET_SPI_MISO" (pins "IC1"-"P5"))
+    (net "NET_UART_TX" (pins "IC1"-"P6" "R3"-"A"))
+    (net "NET_UART_RX" (pins "IC1"-"P7" "R3"-"B"))
+    (net "VIN" (pins "U1"-"IN" "U2"-"IN"))
+    (net "NET_EN" (pins "U1"-"EN" "U2"-"EN" "R4"-"B"))
+    (net "NET_3V3" (pins "U2"-"OUT" "R4"-"A"))
+    (net "NET_LED_A" (pins "R1"-"B" "D1"-"A"))
+    (class "default" "VCC" "GND" "NET_SPI_CLK" "NET_SPI_MOSI" "NET_SPI_MISO" "NET_UART_TX" "NET_UART_RX" "VIN" "NET_EN" "NET_3V3" "NET_LED_A"
+      (circuit
+        (use_layer F.Cu B.Cu)
+        (use_via Via_Default)
+      )
+      (rule
+        (width 0.20)
+        (clearance 0.12)
+        (via Via_Default)
+      )
+    )
+  )
+)

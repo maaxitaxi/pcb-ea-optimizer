@@ -14,7 +14,7 @@ from config import BOARD_W, BOARD_H, BOARD_WIDTH_MM, BOARD_HEIGHT_MM, POP_SIZE, 
 from models import Genome
 from ea_engine import (
     create_scenario, random_placement, normalize_population_fitness, evolve_one_generation,
-    compute_tracelength_fitness, compute_overlap_penalty, compute_bbox_area,
+    compute_tracelength_fitness, compute_overlap_penalty, compute_bbox_area, compute_crossing_penalty
 )
 
 class PCBOptimizerApp:
@@ -65,7 +65,7 @@ class PCBOptimizerApp:
 
         self.lbl_gen = self._add_stat_row(stats_card, "Generation:", "0")
         self.lbl_fit = self._add_stat_row(stats_card, "Beste Fitness:", "Initializing...")
-        self.lbl_inf = self._add_stat_row(stats_card, "Infeasible:", "0 / 0")
+        self.lbl_overlap = self._add_stat_row(stats_card, "Overlap Pen:", "0.0")
 
         btn_zone = tk.Frame(sidebar, bg="#1E1E24")
         btn_zone.pack(fill=tk.X, padx=15, pady=10)
@@ -155,15 +155,19 @@ class PCBOptimizerApp:
     def _record_history(self):
         trace = compute_tracelength_fitness(self.best_genome, self.netlist)
         bbox = compute_bbox_area(self.best_genome)
+        overlap = compute_overlap_penalty(self.best_genome)
         self.history["gen"].append(self.generation)
         self.history["fitness"].append(self.best_fitness)
         self.history["trace_mm"].append(trace * NM_TO_MM if trace != float('inf') else math.nan)
         self.history["bbox_mm2"].append(bbox * NM_TO_MM ** 2 if bbox != float('inf') else math.nan)
-        self.history["overlap"].append(compute_overlap_penalty(self.best_genome))
+        self.history["overlap"].append(overlap)
 
     def _update_status(self):
+        overlap = compute_overlap_penalty(self.best_genome)
+        crossings = compute_crossing_penalty(self.best_genome, self.netlist)
         self.lbl_gen.config(text=str(self.generation))
-        self.lbl_fit.config(text=f"{self.best_fitness:.4f}", fg="#4E9F3D")
+        self.lbl_fit.config(text=f"{self.best_fitness:.4f}", fg="#4E9F3D" if overlap == 0 and crossings == 0 else "#F07171")
+        self.lbl_overlap.config(text=f"{overlap:.2f} (X:{int(crossings)})", fg="#4E9F3D" if overlap == 0 and crossings == 0 else "#F07171")
 
     def _nm_to_canvas(self, x_nm: int, y_nm: int) -> Tuple[float, float]:
         cx = self.CANVAS_PADDING + x_nm * self.scale
@@ -188,7 +192,7 @@ class PCBOptimizerApp:
         x1, y1 = self._nm_to_canvas(0, 0)
         x2, y2 = self._nm_to_canvas(BOARD_W, BOARD_H)
         self.canvas.create_rectangle(x1, y1, x2, y2, outline="#4E9F3D", width=2)
-        self.canvas.create_text(x1 + 10, y1 + 15, text=f"KiCad Canvas: {BOARD_WIDTH_MM}x{BOARD_HEIGHT_MM}mm", fill="#4E9F3D", font=("Consolas", 9), anchor="w")
+        self.canvas.create_text(x1 + 10, y1 + 15, text=f"Canvas: {BOARD_WIDTH_MM}x{BOARD_HEIGHT_MM}mm", fill="#4E9F3D", font=("Consolas", 9), anchor="w")
 
         pin_positions = {}
         for comp in genome:
@@ -204,7 +208,9 @@ class PCBOptimizerApp:
                     self.canvas.create_line(px1, py1, px2, py2, fill="#3F4E4F", width=1, dash=(2, 4))
 
         for comp in genome:
-            x_min, y_min, x_max, y_max = comp.get_bbox()
+            w, h = comp._rotated_dims()
+            x_min, y_min = comp.x - w // 2, comp.y - h // 2
+            x_max, y_max = x_min + w, y_min + h
             cx1, cy1 = self._nm_to_canvas(x_min, y_min)
             cx2, cy2 = self._nm_to_canvas(x_max, y_max)
 
@@ -245,7 +251,7 @@ class PCBOptimizerApp:
 
         gens = self.history["gen"]
         series = [
-            (self.history["fitness"], "Beste Fitness (0-1)", "#4E9F3D"),
+            (self.history["fitness"], "Beste Fitness (>=1.0 ist gültig)", "#4E9F3D"),
             (self.history["trace_mm"], "Leitungslänge (mm)", "#FFB344"),
             (self.history["bbox_mm2"], "Bounding-Box (mm²)", "#5FB3D9"),
             (self.history["overlap"], "Overlap-Penalty", "#F07171"),
@@ -273,10 +279,30 @@ class PCBOptimizerApp:
             messagebox.showwarning("Warnung", "Kein Layout zum Exportieren vorhanden!")
             return
 
+        overlap = compute_overlap_penalty(self.best_genome)
+        if overlap > 0:
+            messagebox.showwarning(
+                "Layout überlappt",
+                f"Das Layout hat noch Bauteil-Überlappungen (Overlap Penalty: {overlap:.2f}).\n\n"
+                "Bitte lass den EA weiterlaufen, bis Overlap = 0.0 erreicht ist!",
+            )
+            return
+
+        crossings = compute_crossing_penalty(self.best_genome, self.netlist)
+        if crossings > 0:
+            proceed = messagebox.askyesno(
+                "Warnung: Kreuzungen vorhanden",
+                f"Das Layout hat noch {int(crossings)} Netz-Kreuzungen.\n\n"
+                "FreeRouting kann evtl. mehr Durchkontaktierungen (Vias) benötigen.\n"
+                "Trotzdem als .DSN exportieren?",
+            )
+            if not proceed:
+                return
+
         file_path = filedialog.asksaveasfilename(
             defaultextension=".dsn",
             filetypes=[("Specctra DSN", "*.dsn"), ("Alle Dateien", "*.*")],
-            title="Layout als DSN speichern"
+            title="Layout als DSN speichern",
         )
         if not file_path:
             return
@@ -300,22 +326,20 @@ class PCBOptimizerApp:
         lines.append('  (resolution mm 1000000)')
         lines.append('  (unit mm)')
         
-        # Structure Section
         lines.append('  (structure')
-        lines.append('    (layer F.Cu (type signal) (property (index 0)))')
-        lines.append('    (layer B.Cu (type signal) (property (index 1)))')
-        # KORREKTUR: Einen nicht-routbaren Layer für Bauteilumrisse deklarieren
-        lines.append('    (layer F.SilkS (type document))') 
+        # Assign explicit routing directions to force 2-layer routing
+        lines.append('    (layer F.Cu (type signal) (property (index 0)) (direction horizontal))')
+        lines.append('    (layer B.Cu (type signal) (property (index 1)) (direction vertical))')
         lines.append('    (boundary')
         lines.append(f'      (rect pcb 0 0 {BOARD_WIDTH_MM} {BOARD_HEIGHT_MM})')
         lines.append('    )')
         lines.append('    (rule')
-        lines.append('      (width 0.25)')
-        lines.append('      (clearance 0.2)')
+        lines.append('      (width 0.20)')
+        lines.append('      (clearance 0.12)')
+        lines.append('      (via Via_Default)')
         lines.append('    )')
         lines.append('  )')
 
-        # Placement Section
         lines.append('  (placement')
         for comp in self.best_genome:
             x_mm = comp.x * NM_TO_MM
@@ -325,35 +349,44 @@ class PCBOptimizerApp:
             lines.append('    )')
         lines.append('  )')
 
-        # Library Section
         lines.append('  (library')
-        lines.append('    (padstack "Pad_Default"')
-        lines.append('      (shape (circle F.Cu 0.8))')
-        lines.append('      (shape (circle B.Cu 0.8))')
+        lines.append('    (padstack "Pad_SMD"')
+        lines.append('      (shape (rect F.Cu -0.35 -0.35 0.35 0.35))')
+        lines.append('      (attach on)')
+        lines.append('    )')
+        lines.append('    (padstack "Via_Default"')
+        lines.append('      (shape (circle F.Cu 0.5 0 0))')
+        lines.append('      (shape (circle B.Cu 0.5 0 0))')
+        lines.append('      (attach on)')
         lines.append('    )')
         
         unique_footprints = {comp.footprint.ref: comp.footprint for comp in self.best_genome}
         for ref, fp in unique_footprints.items():
-            w_mm = fp.width * NM_TO_MM
-            h_mm = fp.height * NM_TO_MM
-            half_w = w_mm / 2.0
-            half_h = h_mm / 2.0
-
             lines.append(f'    (image "LIB_{ref}"')
-            # KORREKTUR: Umriss auf den Document-Layer legen statt auf F.Cu
-            lines.append(f'      (outline (rect F.SilkS -{half_w:.4f} -{half_h:.4f} {half_w:.4f} {half_h:.4f}))')
             for pin in fp.pins:
                 px_mm = pin.rel_x * NM_TO_MM
                 py_mm = pin.rel_y * NM_TO_MM
-                lines.append(f'      (pin "Pad_Default" "{pin.pin_id}" {px_mm:.4f} {py_mm:.4f})')
+                lines.append(f'      (pin "Pad_SMD" "{pin.pin_id}" {px_mm:.4f} {py_mm:.4f})')
             lines.append('    )')
         lines.append('  )')
 
-        # Network Section
         lines.append('  (network')
         for net_id, connections in self.netlist.items():
             pins_str = " ".join([f'"{ref}"-"{pid}"' for ref, pid in connections])
             lines.append(f'    (net "{net_id}" (pins {pins_str}))')
+        
+        net_names = " ".join([f'"{net_id}"' for net_id in self.netlist.keys()])
+        lines.append(f'    (class "default" {net_names}')
+        lines.append('      (circuit')
+        lines.append('        (use_layer F.Cu B.Cu)')
+        lines.append('        (use_via Via_Default)')
+        lines.append('      )')
+        lines.append('      (rule')
+        lines.append('        (width 0.20)')
+        lines.append('        (clearance 0.12)')
+        lines.append('        (via Via_Default)')
+        lines.append('      )')
+        lines.append('    )')
         lines.append('  )')
 
         lines.append(')')
