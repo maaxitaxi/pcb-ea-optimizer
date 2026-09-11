@@ -323,7 +323,7 @@ class PCBOptimizerApp:
         lines.append('    (space_in_quoted_tokens on)')
         lines.append('    (host_cad "KiCad")')
         lines.append('  )')
-        lines.append('  (resolution mm 1000000)')
+        lines.append('  (resolution mm 1000)')
         lines.append('  (unit mm)')
         
         lines.append('  (structure')
