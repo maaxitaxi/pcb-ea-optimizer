@@ -3,6 +3,10 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import copy
 import math
+import os
+import queue
+import re
+import threading
 from typing import List, Optional, Tuple
 
 import matplotlib
@@ -10,12 +14,20 @@ matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from config import BOARD_W, BOARD_H, BOARD_WIDTH_MM, BOARD_HEIGHT_MM, POP_SIZE, NM_TO_MM
+import config
+from config import POP_SIZE, NM_TO_MM, MM_TO_NM
 from models import Genome
 from ea_engine import (
     create_scenario, random_placement, normalize_population_fitness, evolve_one_generation,
     compute_tracelength_fitness, compute_overlap_penalty, compute_bbox_area, compute_crossing_penalty
 )
+import dsn_parser
+import pipeline
+
+
+def _fmt_mm(value_nm: float) -> str:
+    return f"{value_nm * NM_TO_MM:.1f}".rstrip("0").rstrip(".")
+
 
 class PCBOptimizerApp:
     CANVAS_PADDING = 40
@@ -27,6 +39,12 @@ class PCBOptimizerApp:
         self.root.configure(bg="#121214")
 
         self.footprints, self.netlist = create_scenario()
+        self.design: Optional[dsn_parser.DsnDesign] = None  # gesetzt, sobald eine KiCad-DSN geladen ist
+        self.dsn_path: Optional[str] = None
+        self._best_signature = None
+        self.stagnant_generations = 0
+        self.is_routing = False
+        self._route_queue: "queue.Queue[Tuple[str, object]]" = queue.Queue()
 
         self.population: List[Genome] = []
         self.fitness_vals: List[float] = []
@@ -39,9 +57,12 @@ class PCBOptimizerApp:
         self._stats_canvas = None
         self._stats_axes = None
 
-        self.scale = (self.CANVAS_SIZE - 2 * self.CANVAS_PADDING) / max(BOARD_W, BOARD_H)
+        self._update_scale()
         self._build_gui()
         self.reset()
+
+    def _update_scale(self):
+        self.scale = (self.CANVAS_SIZE - 2 * self.CANVAS_PADDING) / max(config.BOARD_W, config.BOARD_H)
 
     def _build_gui(self):
         main_frame = tk.Frame(self.root, bg="#121214")
@@ -85,14 +106,46 @@ class PCBOptimizerApp:
         self.btn_export = tk.Button(btn_zone, text="💾 Als .DSN speichern", font=("Segoe UI", 10, "bold"), bg="#1D4ED8", fg="#FFFFFF", bd=0, pady=8, cursor="hand2", activebackground="#2563EB", command=self.export_dsn)
         self.btn_export.pack(fill=tk.X, pady=3)
 
+        kicad_card = tk.LabelFrame(sidebar, text=" KICAD ", font=("Consolas", 9, "bold"), fg="#4E9F3D", bg="#151518", bd=1, padx=10, pady=8)
+        kicad_card.pack(fill=tk.X, padx=15, pady=5)
+
+        tk.Button(kicad_card, text="📂 KiCad-DSN laden", font=("Segoe UI", 10, "bold"), bg="#2E3A46", fg="#E4E4E7", bd=0, pady=6, cursor="hand2", activebackground="#3E4A56", command=self.load_dsn).pack(fill=tk.X, pady=2)
+
+        margin_row = tk.Frame(kicad_card, bg="#151518")
+        margin_row.pack(fill=tk.X, pady=4)
+        tk.Label(margin_row, text="Bauteil-Abstand (mm):", font=("Consolas", 9), fg="#71717A", bg="#151518").pack(side=tk.LEFT)
+        self.margin_var = tk.StringVar(value=_fmt_mm(config.COURTYARD_MARGIN))
+        margin_box = tk.Spinbox(margin_row, from_=0.0, to=10.0, increment=0.5, width=5, textvariable=self.margin_var, command=self._apply_margin, bg="#1E1E24", fg="#E4E4E7", buttonbackground="#2E3A46", relief=tk.FLAT)
+        margin_box.pack(side=tk.RIGHT)
+        margin_box.bind("<Return>", self._apply_margin)
+        margin_box.bind("<FocusOut>", self._apply_margin)
+
+        self.btn_route = tk.Button(kicad_card, text="🔀 Routen → .ses speichern", font=("Segoe UI", 10, "bold"), bg="#1D4ED8", fg="#FFFFFF", bd=0, pady=6, cursor="hand2", activebackground="#2563EB", command=self.route_to_ses)
+        self.btn_route.pack(fill=tk.X, pady=2)
+
+        self.lbl_kicad = tk.Label(kicad_card, text="Demo-Szenario aktiv", font=("Segoe UI", 8), fg="#A1A1AA", bg="#151518", wraplength=260, justify=tk.LEFT, anchor="w")
+        self.lbl_kicad.pack(fill=tk.X, pady=(4, 0))
+
         legend_card = tk.LabelFrame(sidebar, text=" BAUTEILE ", font=("Consolas", 9, "bold"), fg="#4E9F3D", bg="#151518", bd=1, padx=10, pady=10)
         legend_card.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+        legend_scroll = tk.Scrollbar(legend_card, bg="#1E1E24", troughcolor="#151518", bd=0)
+        legend_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        # Text-Widget statt einzelner Labels: scrollbar, auch bei Boards mit vielen Bauteilen
+        self.legend_text = tk.Text(legend_card, bg="#151518", fg="#A1A1AA", font=("Segoe UI", 9), bd=0, highlightthickness=0,
+                                   spacing1=2, spacing3=2, cursor="arrow", yscrollcommand=legend_scroll.set)
+        self.legend_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        legend_scroll.config(command=self.legend_text.yview)
+        self._refresh_legend()
 
+    def _refresh_legend(self):
+        self.legend_text.config(state=tk.NORMAL)
+        self.legend_text.delete("1.0", tk.END)
         for fp in self.footprints:
-            row = tk.Frame(legend_card, bg="#151518")
-            row.pack(fill=tk.X, pady=2)
-            tk.Label(row, text="■", fg=fp.color, bg="#151518", font=("Consolas", 12)).pack(side=tk.LEFT)
-            tk.Label(row, text=f"{fp.ref} ({fp.width*NM_TO_MM:.0f}x{fp.height*NM_TO_MM:.0f}mm)", fg="#A1A1AA", bg="#151518", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=5)
+            self.legend_text.tag_config(fp.color, foreground=fp.color, font=("Consolas", 12))
+            self.legend_text.insert(tk.END, "■ ", fp.color)
+            lock = " 🔒" if fp.fixed_placement is not None else ""
+            self.legend_text.insert(tk.END, f"{fp.ref} ({_fmt_mm(fp.width)}x{_fmt_mm(fp.height)}mm){lock}\n")
+        self.legend_text.config(state=tk.DISABLED)
 
     def _add_stat_row(self, parent, label: str, default_val: str) -> tk.Label:
         row = tk.Frame(parent, bg="#151518")
@@ -111,7 +164,10 @@ class PCBOptimizerApp:
         self.history = {"gen": [], "fitness": [], "trace_mm": [], "bbox_mm2": [], "overlap": []}
 
         self.population = [random_placement(self.footprints) for _ in range(POP_SIZE)]
+        if self.design is not None:
+            self.population[-1] = copy.deepcopy(self.design.initial_genome)  # KiCad-Platzierung als Startindividuum
         self.fitness_vals = normalize_population_fitness(self.population, self.netlist)
+        self._best_signature, self.stagnant_generations = None, 0
 
         self._update_best()
         self._update_status()
@@ -144,12 +200,27 @@ class PCBOptimizerApp:
         self._update_status()
         self._draw()
         self._refresh_statistics()
+
+        # Im KiCad-Modus terminiert der EA wie die CLI-Pipeline und bietet das Routing an
+        if (self.design is not None and self.stagnant_generations >= pipeline.DEFAULT_PATIENCE
+                and compute_overlap_penalty(self.best_genome) == 0):
+            self.toggle_auto_run()
+            self.lbl_kicad.config(text=f"Konvergiert nach {self.generation} Generationen "
+                                       f"(seit {self.stagnant_generations} ohne Verbesserung).")
+            if messagebox.askyesno("EA terminiert", f"Keine Verbesserung seit {self.stagnant_generations} Generationen.\n\n"
+                                                    "Jetzt mit FreeRouting verdrahten und als .ses speichern?"):
+                self.route_to_ses()
+            return
         self.root.after(20, self._auto_run_loop)
 
     def _update_best(self):
         best_idx = max(range(len(self.fitness_vals)), key=lambda i: self.fitness_vals[i])
         self.best_fitness = self.fitness_vals[best_idx]
         self.best_genome = copy.deepcopy(self.population[best_idx])
+
+        signature = tuple((c.x, c.y, c.rot) for c in self.best_genome)
+        self.stagnant_generations = self.stagnant_generations + 1 if signature == self._best_signature else 0
+        self._best_signature = signature
         self._record_history()
 
     def _record_history(self):
@@ -170,6 +241,8 @@ class PCBOptimizerApp:
         self.lbl_overlap.config(text=f"{overlap:.2f} (X:{int(crossings)})", fg="#4E9F3D" if overlap == 0 and crossings == 0 else "#F07171")
 
     def _nm_to_canvas(self, x_nm: int, y_nm: int) -> Tuple[float, float]:
+        if self.design is not None:
+            y_nm = config.BOARD_H - y_nm  # DSN-Koordinaten haben y nach oben – so sieht es aus wie in KiCad
         cx = self.CANVAS_PADDING + x_nm * self.scale
         cy = self.CANVAS_PADDING + y_nm * self.scale
         return cx, cy
@@ -180,19 +253,20 @@ class PCBOptimizerApp:
         if genome is None:
             return
 
-        for x in range(0, int(BOARD_W) + 1, 25 * 1000000):
+        grid = 25 * MM_TO_NM if max(config.BOARD_W, config.BOARD_H) > 100 * MM_TO_NM else 10 * MM_TO_NM
+        for x in range(0, int(config.BOARD_W) + 1, grid):
             cx1, cy1 = self._nm_to_canvas(x, 0)
-            cx2, cy2 = self._nm_to_canvas(x, BOARD_H)
+            cx2, cy2 = self._nm_to_canvas(x, config.BOARD_H)
             self.canvas.create_line(cx1, cy1, cx2, cy2, fill="#1F1F24")
-        for y in range(0, int(BOARD_H) + 1, 25 * 1000000):
+        for y in range(0, int(config.BOARD_H) + 1, grid):
             cx1, cy1 = self._nm_to_canvas(0, y)
-            cx2, cy2 = self._nm_to_canvas(BOARD_W, y)
+            cx2, cy2 = self._nm_to_canvas(config.BOARD_W, y)
             self.canvas.create_line(cx1, cy1, cx2, cy2, fill="#1F1F24")
 
         x1, y1 = self._nm_to_canvas(0, 0)
-        x2, y2 = self._nm_to_canvas(BOARD_W, BOARD_H)
+        x2, y2 = self._nm_to_canvas(config.BOARD_W, config.BOARD_H)
         self.canvas.create_rectangle(x1, y1, x2, y2, outline="#4E9F3D", width=2)
-        self.canvas.create_text(x1 + 10, y1 + 15, text=f"Canvas: {BOARD_WIDTH_MM}x{BOARD_HEIGHT_MM}mm", fill="#4E9F3D", font=("Consolas", 9), anchor="w")
+        self.canvas.create_text(min(x1, x2) + 10, min(y1, y2) + 15, text=f"Canvas: {_fmt_mm(config.BOARD_W)}x{_fmt_mm(config.BOARD_H)}mm", fill="#4E9F3D", font=("Consolas", 9), anchor="w")
 
         pin_positions = {}
         for comp in genome:
@@ -214,11 +288,13 @@ class PCBOptimizerApp:
             cx1, cy1 = self._nm_to_canvas(x_min, y_min)
             cx2, cy2 = self._nm_to_canvas(x_max, y_max)
 
+            locked = comp.footprint.fixed_placement is not None
             self.canvas.create_rectangle(cx1+3, cy1+3, cx2+3, cy2+3, fill="#000000", outline="")
-            self.canvas.create_rectangle(cx1, cy1, cx2, cy2, fill=comp.footprint.color, outline="#FFFFFF", width=1)
+            self.canvas.create_rectangle(cx1, cy1, cx2, cy2, fill=comp.footprint.color,
+                                         outline="#FFD27A" if locked else "#FFFFFF", width=2 if locked else 1)
             self.canvas.create_text((cx1+cx2)/2, (cy1+cy2)/2, text=comp.footprint.ref, fill="#121214", font=("Consolas", 10, "bold"))
-            if comp.rot != 0:
-                self.canvas.create_text(cx1+4, cy1+4, text=f"{comp.rot}°", fill="#FFFFFF", font=("Consolas", 7), anchor="nw")
+            if comp.rot != 0 and abs(cx2 - cx1) > 40 and abs(cy2 - cy1) > 30:  # bei kleinen Bauteilen würde der Winkel den Namen verdecken
+                self.canvas.create_text(min(cx1, cx2)+4, min(cy1, cy2)+4, text=f"{comp.rot}°", fill="#FFFFFF", font=("Consolas", 7), anchor="nw")
 
             for _, _, abs_x, abs_y in comp.get_pin_positions():
                 pcx, pcy = self._nm_to_canvas(abs_x, abs_y)
@@ -274,6 +350,134 @@ class PCBOptimizerApp:
         if self.stats_window is not None and self.stats_window.winfo_exists():
             self._draw_statistics()
 
+    def load_dsn(self):
+        path = filedialog.askopenfilename(
+            title="KiCad-DSN laden (KiCad: Datei → Exportieren → Specctra DSN)",
+            filetypes=[("Specctra DSN", "*.dsn"), ("Alle Dateien", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            design = dsn_parser.load_dsn(path)
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Die DSN-Datei konnte nicht gelesen werden:\n{e}")
+            return
+
+        if self.is_running:
+            self.toggle_auto_run()
+        self.design, self.dsn_path = design, path
+        self.footprints, self.netlist = design.footprints, design.netlist
+        config.set_board_size(*design.board_size)
+        self._update_scale()
+        self._refresh_legend()
+        self.reset()
+
+        locked = sum(1 for fp in self.footprints if fp.fixed_placement is not None)
+        self.lbl_kicad.config(text=f"{os.path.basename(path)}: {len(self.footprints)} Bauteile "
+                                   f"({locked} gesperrt), {len(self.netlist)} Netze")
+        if design.warnings:
+            messagebox.showwarning("Hinweise beim Einlesen", "\n".join(design.warnings[:15]))
+
+    def _apply_margin(self, _event=None):
+        try:
+            margin_mm = float(self.margin_var.get().replace(",", "."))
+        except ValueError:
+            return
+        margin_nm = int(max(0.0, margin_mm) * MM_TO_NM)
+        if margin_nm == config.COURTYARD_MARGIN:
+            return
+        config.COURTYARD_MARGIN = margin_nm
+        self.fitness_vals = normalize_population_fitness(self.population, self.netlist)
+        self._update_best()
+        self._update_status()
+        self._draw()
+
+    def route_to_ses(self):
+        if self.design is None:
+            messagebox.showinfo("Keine KiCad-Datei", "Bitte zuerst eine KiCad-DSN laden.\n\n"
+                                                     "In KiCad: Datei → Exportieren → Specctra DSN …")
+            return
+        if self.is_routing:
+            return
+        overlap = compute_overlap_penalty(self.best_genome)
+        if overlap > 0:
+            messagebox.showwarning("Layout überlappt",
+                                   f"Das beste Layout hat noch Überlappungen (Overlap Penalty: {overlap:.2f}).\n\n"
+                                   "EA weiterlaufen lassen oder den Bauteil-Abstand verkleinern.")
+            return
+        try:
+            jar = pipeline.find_freerouting_jar()
+        except pipeline.PipelineError as e:
+            messagebox.showerror("FreeRouting fehlt", str(e))
+            return
+
+        stem = os.path.splitext(self.dsn_path)[0]
+        ses_path = filedialog.asksaveasfilename(
+            title="Specctra-Session speichern",
+            defaultextension=".ses",
+            initialdir=os.path.dirname(stem),
+            initialfile=os.path.basename(stem) + ".ses",
+            filetypes=[("Specctra Session", "*.ses"), ("Alle Dateien", "*.*")],
+        )
+        if not ses_path:
+            return
+        if self.is_running:
+            self.toggle_auto_run()
+
+        optimized_dsn = os.path.splitext(ses_path)[0] + "_ea.dsn"
+        try:
+            dsn_parser.write_dsn(self.design, self.best_genome, optimized_dsn)
+        except OSError as e:
+            messagebox.showerror("Fehler", f"Optimierte DSN konnte nicht geschrieben werden:\n{e}")
+            return
+
+        self.is_routing = True
+        self.btn_route.config(state=tk.DISABLED, text="⏳ FreeRouting läuft …")
+        self.lbl_kicad.config(text="FreeRouting startet …")
+        threading.Thread(target=self._route_worker, args=(jar, optimized_dsn, ses_path), daemon=True).start()
+        self.root.after(200, self._poll_routing)
+
+    def _route_worker(self, jar: str, dsn_path: str, ses_path: str):
+        # Läuft im Hintergrund-Thread: nur über die Queue mit Tkinter kommunizieren
+        try:
+            complete = pipeline.run_freerouting(jar, dsn_path, ses_path, pipeline.DEFAULT_PASSES,
+                                                log=lambda line: self._route_queue.put(("log", line)))
+            self._route_queue.put(("done", (ses_path, complete)))
+        except Exception as e:
+            self._route_queue.put(("error", str(e)))
+
+    def _poll_routing(self):
+        try:
+            while True:
+                kind, payload = self._route_queue.get_nowait()
+                if kind == "log":
+                    # Zeitstempel und Job-ID von FreeRouting abschneiden
+                    self.lbl_kicad.config(text=re.sub(r"^.*?\]\s*", "", payload)[:160])
+                else:
+                    self._finish_routing(kind, payload)
+                    return
+        except queue.Empty:
+            pass
+        self.root.after(200, self._poll_routing)
+
+    def _finish_routing(self, kind: str, payload):
+        self.is_routing = False
+        self.btn_route.config(state=tk.NORMAL, text="🔀 Routen → .ses speichern")
+        if kind == "error":
+            self.lbl_kicad.config(text="Routing fehlgeschlagen.")
+            messagebox.showerror("FreeRouting", payload)
+            return
+
+        ses_path, complete = payload
+        self.lbl_kicad.config(text=f"Gespeichert: {os.path.basename(ses_path)}")
+        message = (f"Session gespeichert:\n{ses_path}\n\n"
+                   "In KiCad: Datei → Importieren → Specctra Session …")
+        if complete:
+            messagebox.showinfo("Routing abgeschlossen", message)
+        else:
+            messagebox.showwarning("Routing unvollständig",
+                                   "Nicht alle Verbindungen konnten geroutet werden.\n\n" + message)
+
     def export_dsn(self):
         if not self.best_genome:
             messagebox.showwarning("Warnung", "Kein Layout zum Exportieren vorhanden!")
@@ -308,7 +512,10 @@ class PCBOptimizerApp:
             return
 
         try:
-            dsn_content = self._generate_dsn()
+            if self.design is not None:
+                dsn_content = dsn_parser.render_dsn(self.design, self.best_genome)
+            else:
+                dsn_content = self._generate_dsn()
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(dsn_content)
             messagebox.showinfo("Erfolg", f"Layout erfolgreich gespeichert unter:\n{file_path}")
@@ -331,7 +538,7 @@ class PCBOptimizerApp:
         lines.append('    (layer F.Cu (type signal) (property (index 0)) (direction horizontal))')
         lines.append('    (layer B.Cu (type signal) (property (index 1)) (direction vertical))')
         lines.append('    (boundary')
-        lines.append(f'      (rect pcb 0 0 {BOARD_WIDTH_MM} {BOARD_HEIGHT_MM})')
+        lines.append(f'      (rect pcb 0 0 {config.BOARD_WIDTH_MM} {config.BOARD_HEIGHT_MM})')
         lines.append('    )')
         lines.append('    (rule')
         lines.append('      (width 0.20)')

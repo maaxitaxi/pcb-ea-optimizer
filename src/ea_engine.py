@@ -3,8 +3,9 @@ import random
 import copy
 import math
 from typing import List, Dict, Tuple
+import config
 from config import (
-    BOARD_W, BOARD_H, POP_SIZE, TOURNAMENT_K, CROSSOVER_RATE, MUTATION_RATE, SIGMA_XY, ROT_MUTATE_P,
+    POP_SIZE, TOURNAMENT_K, CROSSOVER_RATE, MUTATION_RATE, SIGMA_XY, ROT_MUTATE_P,
     VALID_ROTATIONS, MM_TO_NM, TRACE_WEIGHT, OVERLAP_WEIGHT, BBOX_WEIGHT,
     POWER_NET_KEYWORDS, POWER_NET_WEIGHT, DATA_NET_WEIGHT,
 )
@@ -45,20 +46,24 @@ def create_scenario() -> Tuple[List[Footprint], Dict[str, List[Tuple[str, str]]]
 
 
 def random_placement(footprints: List[Footprint]) -> Genome:
+    fixed = [PlacedComponent(fp, *fp.fixed_placement) for fp in footprints if fp.fixed_placement is not None]
     placed: Genome = []
     for fp in footprints:
+        if fp.fixed_placement is not None:
+            placed.append(PlacedComponent(fp, *fp.fixed_placement))
+            continue
         for _ in range(500):
             rot = random.choice(VALID_ROTATIONS)
             ew, eh = (fp.height, fp.width) if rot in (90, 270) else (fp.width, fp.height)
             half_w, half_h = ew // 2, eh // 2
-            x = random.randint(half_w, BOARD_W - half_w)
-            y = random.randint(half_h, BOARD_H - half_h)
+            x = random.randint(half_w, max(half_w, config.BOARD_W - half_w))
+            y = random.randint(half_h, max(half_h, config.BOARD_H - half_h))
             candidate = PlacedComponent(footprint=fp, x=x, y=y, rot=rot)
-            if not any(candidate.overlaps(other) for other in placed):
+            if not any(candidate.overlaps(other) for other in placed + fixed):
                 placed.append(candidate)
                 break
         else:
-            placed.append(PlacedComponent(footprint=fp, x=BOARD_W//2, y=BOARD_H//2, rot=0))
+            placed.append(PlacedComponent(footprint=fp, x=config.BOARD_W//2, y=config.BOARD_H//2, rot=0))
     return placed
 
 
@@ -122,6 +127,9 @@ def compute_overlap_penalty(genome: Genome) -> float:
     total = 0.0
     for i in range(len(genome)):
         for j in range(i + 1, len(genome)):
+            # Zwei gesperrte Bauteile kann der EA nicht auseinanderbewegen
+            if genome[i].footprint.fixed_placement is not None and genome[j].footprint.fixed_placement is not None:
+                continue
             total += genome[i].overlaps(genome[j])
     return total
 
@@ -191,14 +199,16 @@ def uniform_crossover(parent1: Genome, parent2: Genome) -> Tuple[Genome, Genome]
 
 def mutate(genome: Genome, sigma: float, mutation_rate: float) -> Genome:
     for comp in genome:
+        if comp.footprint.fixed_placement is not None:
+            continue
         if random.random() < mutation_rate:
             comp.x += int(random.gauss(0, sigma))
             comp.y += int(random.gauss(0, sigma))
             if random.random() < ROT_MUTATE_P:
                 comp.rot = random.choice(VALID_ROTATIONS)
             w, h = comp._rotated_dims()
-            comp.x = max(w // 2, min(BOARD_W - w // 2, comp.x))
-            comp.y = max(h // 2, min(BOARD_H - h // 2, comp.y))
+            comp.x = max(w // 2, min(config.BOARD_W - w // 2, comp.x))
+            comp.y = max(h // 2, min(config.BOARD_H - h // 2, comp.y))
     return genome
 
 
