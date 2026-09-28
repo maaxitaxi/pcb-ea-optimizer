@@ -1,11 +1,8 @@
 # models.py
 import math
 from dataclasses import dataclass, field
-from typing import List, Tuple
-from config import BOARD_W, BOARD_H, MM_TO_NM
-
-# Buffer margin around component boxes (in nanometers) to ensure via routing channels
-COURTYARD_MARGIN = 2_500_000  # 2.5 mm clearance buffer
+from typing import List, Optional, Tuple
+import config
 
 @dataclass
 class Pin:
@@ -20,7 +17,8 @@ class Footprint:
     width: int           
     height: int          
     pins: List[Pin] = field(default_factory=list)
-    color: str = "#4FC3F7"  
+    color: str = "#4FC3F7"
+    fixed_placement: Optional[Tuple[int, int, int]] = None  # (x, y, rot) gesperrter Bauteile – der EA bewegt sie nicht
 
 @dataclass
 class PlacedComponent:
@@ -36,10 +34,11 @@ class PlacedComponent:
 
     def get_bbox(self) -> Tuple[int, int, int, int]:
         w, h = self._rotated_dims()
-        x_min = self.x - w // 2 - COURTYARD_MARGIN
-        y_min = self.y - h // 2 - COURTYARD_MARGIN
-        x_max = self.x + w // 2 + COURTYARD_MARGIN
-        y_max = self.y + h // 2 + COURTYARD_MARGIN
+        margin = config.COURTYARD_MARGIN
+        x_min = self.x - w // 2 - margin
+        y_min = self.y - h // 2 - margin
+        x_max = self.x + w // 2 + margin
+        y_max = self.y + h // 2 + margin
         return x_min, y_min, x_max, y_max
 
     def get_pin_positions(self) -> List[Tuple[str, str, int, int]]:
@@ -58,12 +57,15 @@ class PlacedComponent:
         return results
 
     def is_within_board(self) -> bool:
+        # Gesperrte Bauteile (z.B. Stecker am Platinenrand) dürfen überstehen
+        if self.footprint.fixed_placement is not None:
+            return True
         w, h = self._rotated_dims()
         x_min = self.x - w // 2
         y_min = self.y - h // 2
         x_max = x_min + w
         y_max = y_min + h
-        return x_min >= 0 and y_min >= 0 and x_max <= BOARD_W and y_max <= BOARD_H
+        return x_min >= 0 and y_min >= 0 and x_max <= config.BOARD_W and y_max <= config.BOARD_H
 
     def overlaps(self, other: 'PlacedComponent') -> float:
         ax1, ay1, ax2, ay2 = self.get_bbox()
