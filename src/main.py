@@ -3,6 +3,9 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import copy
 import math
+import os
+import subprocess
+import threading
 from typing import List, Optional, Tuple
 
 import matplotlib
@@ -84,6 +87,9 @@ class PCBOptimizerApp:
 
         self.btn_export = tk.Button(btn_zone, text="💾 Als .DSN speichern", font=("Segoe UI", 10, "bold"), bg="#1D4ED8", fg="#FFFFFF", bd=0, pady=8, cursor="hand2", activebackground="#2563EB", command=self.export_dsn)
         self.btn_export.pack(fill=tk.X, pady=3)
+
+        self.btn_route = tk.Button(btn_zone, text="🔀 Auto-Route (FreeRouting)", font=("Segoe UI", 10, "bold"), bg="#7C3AED", fg="#FFFFFF", bd=0, pady=8, cursor="hand2", activebackground="#8B5CF6", command=self.route_with_freerouting)
+        self.btn_route.pack(fill=tk.X, pady=3)
 
         legend_card = tk.LabelFrame(sidebar, text=" BAUTEILE ", font=("Consolas", 9, "bold"), fg="#4E9F3D", bg="#151518", bd=1, padx=10, pady=10)
         legend_card.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
@@ -274,10 +280,10 @@ class PCBOptimizerApp:
         if self.stats_window is not None and self.stats_window.winfo_exists():
             self._draw_statistics()
 
-    def export_dsn(self):
+    def _check_layout_ready(self, action_text: str) -> bool:
         if not self.best_genome:
             messagebox.showwarning("Warnung", "Kein Layout zum Exportieren vorhanden!")
-            return
+            return False
 
         overlap = compute_overlap_penalty(self.best_genome)
         if overlap > 0:
@@ -286,7 +292,7 @@ class PCBOptimizerApp:
                 f"Das Layout hat noch Bauteil-Überlappungen (Overlap Penalty: {overlap:.2f}).\n\n"
                 "Bitte lass den EA weiterlaufen, bis Overlap = 0.0 erreicht ist!",
             )
-            return
+            return False
 
         crossings = compute_crossing_penalty(self.best_genome, self.netlist)
         if crossings > 0:
@@ -294,10 +300,16 @@ class PCBOptimizerApp:
                 "Warnung: Kreuzungen vorhanden",
                 f"Das Layout hat noch {int(crossings)} Netz-Kreuzungen.\n\n"
                 "FreeRouting kann evtl. mehr Durchkontaktierungen (Vias) benötigen.\n"
-                "Trotzdem als .DSN exportieren?",
+                f"Trotzdem {action_text}?",
             )
             if not proceed:
-                return
+                return False
+
+        return True
+
+    def export_dsn(self):
+        if not self._check_layout_ready("als .DSN exportieren"):
+            return
 
         file_path = filedialog.asksaveasfilename(
             defaultextension=".dsn",
@@ -314,6 +326,70 @@ class PCBOptimizerApp:
             messagebox.showinfo("Erfolg", f"Layout erfolgreich gespeichert unter:\n{file_path}")
         except Exception as e:
             messagebox.showerror("Fehler", f"Fehler beim Speichern der DSN-Datei:\n{e}")
+
+    def route_with_freerouting(self):
+        if not self._check_layout_ready("routen"):
+            return
+
+        jar_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "freerouting-2.3.0.jar")
+        if not os.path.isfile(jar_path):
+            messagebox.showerror("Fehler", f"freerouting-2.3.0.jar nicht gefunden:\n{jar_path}")
+            return
+
+        ses_path = filedialog.asksaveasfilename(
+            defaultextension=".ses",
+            filetypes=[("Specctra Session", "*.ses"), ("Alle Dateien", "*.*")],
+            title="Geroutetes Layout als SES speichern",
+        )
+        if not ses_path:
+            return
+
+        dsn_path = os.path.splitext(ses_path)[0] + ".dsn"
+
+        try:
+            dsn_content = self._generate_dsn()
+            with open(dsn_path, "w", encoding="utf-8") as f:
+                f.write(dsn_content)
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Fehler beim Speichern der DSN-Datei:\n{e}")
+            return
+
+        self.btn_route.config(state=tk.DISABLED, text="⏳ Routing läuft...")
+        self.btn_export.config(state=tk.DISABLED)
+
+        def worker():
+            try:
+                result = subprocess.run(
+                    ["java", "-jar", jar_path, "-de", dsn_path, "-do", ses_path, "-mt", "1"],
+                    capture_output=True, text=True, timeout=300,
+                )
+                self.root.after(0, self._on_routing_done, result, dsn_path, ses_path)
+            except Exception as e:
+                self.root.after(0, self._on_routing_failed, e)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_routing_done(self, result: subprocess.CompletedProcess, dsn_path: str, ses_path: str):
+        self.btn_route.config(state=tk.NORMAL, text="🔀 Auto-Route (FreeRouting)")
+        self.btn_export.config(state=tk.NORMAL)
+
+        if result.returncode != 0 or not os.path.isfile(ses_path):
+            log_tail = (result.stderr or result.stdout or "")[-1500:]
+            messagebox.showerror(
+                "Fehler",
+                f"FreeRouting ist fehlgeschlagen (Exit-Code {result.returncode}).\n\n{log_tail}",
+            )
+            return
+
+        messagebox.showinfo(
+            "Erfolg",
+            f"Routing abgeschlossen!\n\nDSN: {dsn_path}\nSES: {ses_path}",
+        )
+
+    def _on_routing_failed(self, error: Exception):
+        self.btn_route.config(state=tk.NORMAL, text="🔀 Auto-Route (FreeRouting)")
+        self.btn_export.config(state=tk.NORMAL)
+        messagebox.showerror("Fehler", f"FreeRouting konnte nicht gestartet werden:\n{error}")
 
     def _generate_dsn(self) -> str:
         lines = []
