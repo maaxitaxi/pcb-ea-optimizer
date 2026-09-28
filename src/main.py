@@ -478,7 +478,7 @@ class PCBOptimizerApp:
             messagebox.showwarning("Routing unvollständig",
                                    "Nicht alle Verbindungen konnten geroutet werden.\n\n" + message)
 
-    def export_dsn(self):
+    def _check_layout_ready(self, action_text: str) -> bool:
         if not self.best_genome:
             messagebox.showwarning("Warnung", "Kein Layout zum Exportieren vorhanden!")
             return False
@@ -527,70 +527,6 @@ class PCBOptimizerApp:
             messagebox.showinfo("Erfolg", f"Layout erfolgreich gespeichert unter:\n{file_path}")
         except Exception as e:
             messagebox.showerror("Fehler", f"Fehler beim Speichern der DSN-Datei:\n{e}")
-
-    def route_with_freerouting(self):
-        if not self._check_layout_ready("routen"):
-            return
-
-        jar_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "freerouting-2.3.0.jar")
-        if not os.path.isfile(jar_path):
-            messagebox.showerror("Fehler", f"freerouting-2.3.0.jar nicht gefunden:\n{jar_path}")
-            return
-
-        ses_path = filedialog.asksaveasfilename(
-            defaultextension=".ses",
-            filetypes=[("Specctra Session", "*.ses"), ("Alle Dateien", "*.*")],
-            title="Geroutetes Layout als SES speichern",
-        )
-        if not ses_path:
-            return
-
-        dsn_path = os.path.splitext(ses_path)[0] + ".dsn"
-
-        try:
-            dsn_content = self._generate_dsn()
-            with open(dsn_path, "w", encoding="utf-8") as f:
-                f.write(dsn_content)
-        except Exception as e:
-            messagebox.showerror("Fehler", f"Fehler beim Speichern der DSN-Datei:\n{e}")
-            return
-
-        self.btn_route.config(state=tk.DISABLED, text="⏳ Routing läuft...")
-        self.btn_export.config(state=tk.DISABLED)
-
-        def worker():
-            try:
-                result = subprocess.run(
-                    ["java", "-jar", jar_path, "-de", dsn_path, "-do", ses_path, "-mt", "1"],
-                    capture_output=True, text=True, timeout=300,
-                )
-                self.root.after(0, self._on_routing_done, result, dsn_path, ses_path)
-            except Exception as e:
-                self.root.after(0, self._on_routing_failed, e)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_routing_done(self, result: subprocess.CompletedProcess, dsn_path: str, ses_path: str):
-        self.btn_route.config(state=tk.NORMAL, text="🔀 Auto-Route (FreeRouting)")
-        self.btn_export.config(state=tk.NORMAL)
-
-        if result.returncode != 0 or not os.path.isfile(ses_path):
-            log_tail = (result.stderr or result.stdout or "")[-1500:]
-            messagebox.showerror(
-                "Fehler",
-                f"FreeRouting ist fehlgeschlagen (Exit-Code {result.returncode}).\n\n{log_tail}",
-            )
-            return
-
-        messagebox.showinfo(
-            "Erfolg",
-            f"Routing abgeschlossen!\n\nDSN: {dsn_path}\nSES: {ses_path}",
-        )
-
-    def _on_routing_failed(self, error: Exception):
-        self.btn_route.config(state=tk.NORMAL, text="🔀 Auto-Route (FreeRouting)")
-        self.btn_export.config(state=tk.NORMAL)
-        messagebox.showerror("Fehler", f"FreeRouting konnte nicht gestartet werden:\n{error}")
 
     def _generate_dsn(self) -> str:
         lines = []
