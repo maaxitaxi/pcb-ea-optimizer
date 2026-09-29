@@ -4,7 +4,7 @@
     (space_in_quoted_tokens on)
     (host_cad "KiCad")
   )
-  (resolution mm 1000000)
+  (resolution mm 10000)
   (unit mm)
   (structure
     (layer F.Cu (type signal) (property (index 0)) (direction horizontal))
@@ -20,28 +20,28 @@
   )
   (placement
     (component "LIB_IC1"
-      (place IC1 79.0693 74.3858 front 0.0)
+      (place IC1 51.9619 87.7421 front 180.0)
     )
     (component "LIB_U1"
-      (place U1 68.4152 105.3883 front 180.0)
+      (place U1 82.3302 74.7709 front 180.0)
     )
     (component "LIB_U2"
-      (place U2 91.4076 116.0362 front 180.0)
+      (place U2 97.6920 55.1854 front 90.0)
     )
     (component "LIB_R1"
-      (place R1 53.9473 44.7086 front 270.0)
+      (place R1 33.8388 62.2387 front 270.0)
     )
     (component "LIB_R2"
-      (place R2 86.3242 98.2818 front 0.0)
+      (place R2 77.9573 102.1835 front 180.0)
     )
     (component "LIB_R3"
-      (place R3 92.5863 46.3265 front 270.0)
+      (place R3 28.8997 98.0678 front 90.0)
     )
     (component "LIB_R4"
-      (place R4 52.8577 104.3392 front 90.0)
+      (place R4 101.6756 75.4751 front 90.0)
     )
     (component "LIB_D1"
-      (place D1 64.3777 42.2502 front 90.0)
+      (place D1 24.3833 60.9353 front 90.0)
     )
   )
   (library

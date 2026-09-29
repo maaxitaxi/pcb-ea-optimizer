@@ -9,6 +9,16 @@ BOARD_HEIGHT_MM = 150
 BOARD_W = BOARD_WIDTH_MM  * MM_TO_NM
 BOARD_H = BOARD_HEIGHT_MM * MM_TO_NM
 
+# Sicherheitsabstand um jedes Bauteil (Platz für Leiterbahnen/Vias)
+COURTYARD_MARGIN = 2_500_000  # 2.5 mm
+
+
+def set_board_size(width_nm: int, height_nm: int) -> None:
+    """Überschreibt die Platinengröße, z.B. mit dem Umriss aus einer DSN-Datei."""
+    global BOARD_W, BOARD_H, BOARD_WIDTH_MM, BOARD_HEIGHT_MM
+    BOARD_W, BOARD_H = int(width_nm), int(height_nm)
+    BOARD_WIDTH_MM, BOARD_HEIGHT_MM = BOARD_W / MM_TO_NM, BOARD_H / MM_TO_NM
+
 VALID_ROTATIONS = [0, 90, 180, 270]
 
 # EA-Hyperparameter (Optimiert für die neue GUI)
