@@ -19,7 +19,7 @@ from config import MM_TO_NM, NM_TO_MM, POP_SIZE
 from models import Footprint, Genome
 from ea_engine import (
     random_placement, normalize_population_fitness, evolve_one_generation,
-    compute_overlap_penalty, compute_tracelength_fitness, compute_crossing_penalty, compute_bbox_area,
+    compute_overlap_penalty, compute_tracelength_fitness, compute_crossing_penalty, compute_bbox_area, compute_packing_density,
 )
 import dsn_parser
 
@@ -56,7 +56,7 @@ def run_ea(
     best_signature, stagnant = None, 0
     best = seed_genome
     for generation in range(1, max_generations + 1):
-        population, fitness = evolve_one_generation(population, fitness, netlist)
+        population, fitness = evolve_one_generation(population, fitness, netlist, generation)
         best = population[max(range(len(fitness)), key=fitness.__getitem__)]
 
         signature = tuple((c.x, c.y, c.rot) for c in best)
@@ -158,7 +158,7 @@ def main() -> None:
     overlap = compute_overlap_penalty(best)
     print(f"  Dauer {time.time() - start:.1f} s | Trace-Score {compute_tracelength_fitness(best, design.netlist) * NM_TO_MM:.1f} mm "
           f"(Länge + 50 mm je Kreuzung) | "
-          f"Bounding-Box {compute_bbox_area(best) * NM_TO_MM ** 2:.0f} mm² | Overlap {overlap:.2f}")
+          f"Bounding-Box {compute_bbox_area(best) * NM_TO_MM ** 2:.0f} mm² (Packungsdichte {compute_packing_density(best):.0%}) | Overlap {overlap:.2f}")
     if overlap > 0:
         sys.exit("FEHLER: Das beste Layout hat noch Überlappungen – nicht geroutet.\n"
                  "        Mehr Generationen (-g) oder kleineren Abstand (--margin) versuchen.")

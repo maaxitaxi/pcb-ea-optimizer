@@ -19,7 +19,8 @@ from config import POP_SIZE, NM_TO_MM, MM_TO_NM
 from models import Genome
 from ea_engine import (
     create_scenario, random_placement, normalize_population_fitness, evolve_one_generation,
-    compute_tracelength_fitness, compute_overlap_penalty, compute_bbox_area, compute_crossing_penalty
+    compute_tracelength_fitness, compute_overlap_penalty, compute_bbox_area, compute_crossing_penalty,
+    net_segments,
 )
 import dsn_parser
 import pipeline
@@ -174,7 +175,7 @@ class PCBOptimizerApp:
         self._draw()
 
     def next_generation(self):
-        self.population, self.fitness_vals = evolve_one_generation(self.population, self.fitness_vals, self.netlist)
+        self.population, self.fitness_vals = evolve_one_generation(self.population, self.fitness_vals, self.netlist, self.generation)
         self.generation += 1
         self._update_best()
         self._update_status()
@@ -194,7 +195,7 @@ class PCBOptimizerApp:
         if not self.is_running:
             return
         for _ in range(5):
-            self.population, self.fitness_vals = evolve_one_generation(self.population, self.fitness_vals, self.netlist)
+            self.population, self.fitness_vals = evolve_one_generation(self.population, self.fitness_vals, self.netlist, self.generation)
             self.generation += 1
             self._update_best()
         self._update_status()
@@ -268,18 +269,10 @@ class PCBOptimizerApp:
         self.canvas.create_rectangle(x1, y1, x2, y2, outline="#4E9F3D", width=2)
         self.canvas.create_text(min(x1, x2) + 10, min(y1, y2) + 15, text=f"Canvas: {_fmt_mm(config.BOARD_W)}x{_fmt_mm(config.BOARD_H)}mm", fill="#4E9F3D", font=("Consolas", 9), anchor="w")
 
-        pin_positions = {}
-        for comp in genome:
-            for pin_id, _, abs_x, abs_y in comp.get_pin_positions():
-                pin_positions[(comp.footprint.ref, pin_id)] = (abs_x, abs_y)
-
-        for net_id, connections in self.netlist.items():
-            net_pins = [pin_positions[key] for ref, pid in connections if (key := (ref, pid)) in pin_positions]
-            for i in range(len(net_pins)):
-                for j in range(i + 1, len(net_pins)):
-                    px1, py1 = self._nm_to_canvas(*net_pins[i])
-                    px2, py2 = self._nm_to_canvas(*net_pins[j])
-                    self.canvas.create_line(px1, py1, px2, py2, fill="#3F4E4F", width=1, dash=(2, 4))
+        for _, a, b in net_segments(genome, self.netlist):
+            px1, py1 = self._nm_to_canvas(*a)
+            px2, py2 = self._nm_to_canvas(*b)
+            self.canvas.create_line(px1, py1, px2, py2, fill="#3F4E4F", width=1, dash=(2, 4))
 
         for comp in genome:
             w, h = comp._rotated_dims()

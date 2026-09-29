@@ -1,5 +1,4 @@
 # models.py
-import math
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 import config
@@ -19,6 +18,10 @@ class Footprint:
     pins: List[Pin] = field(default_factory=list)
     color: str = "#4FC3F7"
     fixed_placement: Optional[Tuple[int, int, int]] = None  # (x, y, rot) gesperrter Bauteile – der EA bewegt sie nicht
+
+# (cos, sin) je Drehwinkel – erspart math.cos/sin bei jeder Pin-Berechnung
+_ROT_COS_SIN = {0: (1, 0), 90: (0, 1), 180: (-1, 0), 270: (0, -1)}
+
 
 @dataclass
 class PlacedComponent:
@@ -42,19 +45,12 @@ class PlacedComponent:
         return x_min, y_min, x_max, y_max
 
     def get_pin_positions(self) -> List[Tuple[str, str, int, int]]:
-        results = []
-        angle_rad = math.radians(self.rot)
-        cos_a = round(math.cos(angle_rad))
-        sin_a = round(math.sin(angle_rad))
-
-        for pin in self.footprint.pins:
-            rx, ry = pin.rel_x, pin.rel_y
-            rot_x = int(rx * cos_a - ry * sin_a)
-            rot_y = int(rx * sin_a + ry * cos_a)
-            abs_x = self.x + rot_x
-            abs_y = self.y + rot_y
-            results.append((pin.pin_id, pin.net_id, abs_x, abs_y))
-        return results
+        cos_a, sin_a = _ROT_COS_SIN[self.rot]
+        x, y = self.x, self.y
+        return [(pin.pin_id, pin.net_id,
+                 x + int(pin.rel_x * cos_a - pin.rel_y * sin_a),
+                 y + int(pin.rel_x * sin_a + pin.rel_y * cos_a))
+                for pin in self.footprint.pins]
 
     def is_within_board(self) -> bool:
         # Gesperrte Bauteile (z.B. Stecker am Platinenrand) dürfen überstehen
@@ -83,5 +79,9 @@ class PlacedComponent:
         smaller_area = min(area_a, area_b)
 
         return inter_area / smaller_area
+
+    def __deepcopy__(self, memo) -> 'PlacedComponent':
+        # Der Footprint ändert sich während des EA nie – teilen statt mitkopieren
+        return PlacedComponent(self.footprint, self.x, self.y, self.rot)
 
 Genome = List[PlacedComponent]
